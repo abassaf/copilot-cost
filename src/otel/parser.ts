@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { computeCost, getModelPrice, normalizeModel } from "../pricing/loader.js";
+import { resolveContextTier } from "../util/context-tier.js";
+import { nanoAiuToUsd } from "../util/aiu.js";
 
 export interface NormalizedCall {
   dedup_key: string;
@@ -102,7 +104,12 @@ function hashRecord(record: unknown): string {
 export function isChatSpan(record: unknown): boolean {
   if (!isObject(record) || record.scopeMetrics) return false;
   const a = attrs(record);
-  if (a["gen_ai.operation.name"] === "chat") return true;
+  const operation = str(a["gen_ai.operation.name"] ?? record.name);
+  // Parent invoke_agent spans roll up every child chat call's tokens/nano-AIU.
+  // Counting them alongside the leaf chat spans doubles dashboard totals vs the
+  // Copilot CLI usage panel. Only billable chat completions count.
+  if (operation === "chat") return true;
+  if (operation && operation !== "chat" && !operation.startsWith("chat ")) return false;
   if (record.type === "span" && typeof record.name === "string" && record.name.startsWith("chat ")) return true;
   return Boolean((a["gen_ai.request.model"] ?? a["gen_ai.response.model"] ?? a.model ?? record.model) && (a["gen_ai.usage.input_tokens"] ?? a.input_tokens ?? record.input_tokens) !== undefined);
 }
@@ -136,11 +143,32 @@ export function normalizeSpan(record: unknown): NormalizedCall | null {
   const existingDedup = str(record.dedup_key);
   const dedupKey = existingDedup ?? (traceId && spanId ? `${traceId}:${spanId}` : responseId ?? (isLogRecord ? `${model}:${JSON.stringify(record.hrTime)}` : spanId ?? hashRecord(record)));
   const { price } = pricedModel;
-  const usdCost = price ? computeCost({ input: freshInput + cacheRead + cacheCreation, cache_read: cacheRead, cache_write: cacheCreation, output }, price) : 0;
+  const sessionId = str(a["copilot.session_id"] ?? a.session_id ?? record.session_id);
+  // Bill at the pinned context-window mode (settings / session meta), not by
+  // comparing this call's input tokens to a docs threshold.
+  const contextTier = resolveContextTier({
+    explicit: a["copilot.context_tier"] ?? a.context_tier ?? a.contextTier ?? record.context_tier,
+    sessionId,
+  });
+  // The backend stamps each call's actual bill onto the span as nano-AIU
+  // (github.copilot.nano_aiu). It reflects real per-vendor billing (which can
+  // diverge sharply from list-price-per-token, e.g. flat/discounted rates for
+  // some models) so prefer it over our token x snapshot-price estimate, which
+  // is only a fallback for calls/spans that predate or omit this attribute.
+  const nanoAiu = num(a["github.copilot.nano_aiu"], a.nano_aiu, record.nano_aiu);
+  const usdCost = nanoAiu > 0
+    ? nanoAiuToUsd(nanoAiu)
+    : price
+      ? computeCost(
+        { input: freshInput + cacheRead + cacheCreation, cache_read: cacheRead, cache_write: cacheCreation, output },
+        price,
+        { contextTier },
+      )
+      : 0;
 
   return {
     dedup_key: dedupKey,
-    session_id: str(a["copilot.session_id"] ?? a.session_id ?? record.session_id),
+    session_id: sessionId,
     conversation_id: str(a["gen_ai.conversation.id"]),
     session_name: str(a["copilot.session_name"] ?? a.session_name ?? record.session_name),
     cwd: str(a["copilot.cwd"] ?? a["process.cwd"] ?? a.cwd ?? record.cwd),

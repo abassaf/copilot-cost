@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { clearCache, readAllCalls } from "../src/otel/reader.js";
 import { clearSessionMetaCache } from "../src/util/session-meta.js";
@@ -57,6 +57,27 @@ describe("OTel reader", () => {
     const afterTouch = readAllCalls();
     expect(afterTouch).not.toBe(first);
     expect(afterTouch).toEqual(first);
+  });
+
+  it("reads records across chunks and only parses newly appended data", () => {
+    const file = path.join(root, "large.jsonl");
+    const oversized = JSON.stringify({
+      traceId: "trace",
+      spanId: "large",
+      startTime: [1_700_000_000, 0],
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "gpt-5-mini",
+        "gen_ai.usage.input_tokens": 10,
+        padding: "x".repeat(1_100_000),
+      },
+    });
+    writeFileSync(file, `${oversized}\n`, "utf-8");
+
+    expect(readAllCalls().map((call) => call.dedup_key)).toEqual(["trace:large"]);
+
+    appendFileSync(file, `${line("appended")}\n`, "utf-8");
+    expect(readAllCalls().map((call) => call.dedup_key)).toEqual(["trace:large", "trace:appended"]);
   });
 
   it("falls back to gen_ai.conversation.id for session_id and enriches from sidecar meta", () => {

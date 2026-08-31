@@ -8,6 +8,8 @@ export interface SessionMetaEntry {
   session_name: string | null;
   cwd: string | null;
   model: string | null;
+  /** Selected Copilot context-window billing tier when known. */
+  context_tier?: "default" | "long_context" | null;
 }
 
 const META_FILENAME = "copilot-cost-meta.jsonl";
@@ -58,12 +60,16 @@ export function readSessionMeta(env: NodeJS.ProcessEnv = process.env): SessionMe
     try {
       const parsed = JSON.parse(line) as Partial<SessionMetaEntry>;
       if (typeof parsed.ts !== "string" || typeof parsed.session_id !== "string") continue;
+      const tierRaw = typeof parsed.context_tier === "string" ? parsed.context_tier : null;
+      const context_tier =
+        tierRaw === "default" || tierRaw === "long_context" ? tierRaw : null;
       entries.push({
         ts: parsed.ts,
         session_id: parsed.session_id,
         session_name: typeof parsed.session_name === "string" ? parsed.session_name : null,
         cwd: typeof parsed.cwd === "string" ? parsed.cwd : null,
         model: typeof parsed.model === "string" ? parsed.model : null,
+        context_tier,
       });
     } catch {
       // Skip malformed sidecar lines.

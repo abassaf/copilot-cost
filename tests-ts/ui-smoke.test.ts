@@ -106,6 +106,9 @@ describe("dashboard UI smoke", () => {
     const htmlBody = await html.text();
     expect(htmlBody).toContain('<main id="page"');
     expect(htmlBody).toContain("Overview");
+    expect(htmlBody).toContain('aria-label="Display currency"');
+    expect(htmlBody).toContain('data-currency="AUD"');
+    expect(htmlBody).toContain('id="fx-status"');
 
     const css = await fetch(`${baseUrl}/styles.css`);
     expect(css.status).toBe(200);
@@ -113,13 +116,18 @@ describe("dashboard UI smoke", () => {
     const cssBody = await css.text();
     expect(cssBody).toContain("--background");
     expect(cssBody).toContain("--accent");
+    expect(cssBody).toContain(".fx-status");
 
     const js = await fetch(`${baseUrl}/app.js`);
     expect(js.status).toBe(200);
     expect(js.headers.get("content-type")).toMatch(/(?:application|text)\/javascript/);
     const jsBody = await js.text();
     expect(jsBody).toContain("./chart.umd.js");
+    expect(jsBody).toContain("/api/fx");
+    expect(jsBody).toContain("copilot-cost.currency");
+    expect(jsBody).not.toContain("api.frankfurter.dev");
     expect(jsBody).not.toContain("cdn.jsdelivr.net");
+    expect(jsBody).not.toContain("state.useMock = true");
 
     const chart = await fetch(`${baseUrl}/chart.umd.js`);
     expect(chart.status).toBe(200);
@@ -157,6 +165,14 @@ describe("dashboard UI smoke", () => {
     expectJson(pricing);
     const pricingBody = (await pricing.json()) as { models?: Record<string, unknown> };
     expect(Object.keys(pricingBody.models ?? {}).length).toBeGreaterThan(0);
+
+    const fx = await fetch(`${baseUrl}/api/fx`);
+    expectJson(fx);
+    const fxBody = (await fx.json()) as { base?: string; quote?: string; available?: boolean; rate?: number | null };
+    expect(fxBody.base).toBe("USD");
+    expect(fxBody.quote).toBe("AUD");
+    expect(typeof fxBody.available).toBe("boolean");
+    expect(fxBody.rate === null || (typeof fxBody.rate === "number" && fxBody.rate > 0)).toBe(true);
 
     const csv = await fetch(`${baseUrl}/api/export.csv`);
     expect(csv.status).toBe(200);

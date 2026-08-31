@@ -81,6 +81,156 @@ describe("dashboard server", () => {
     expect(Object.keys(body.models).length).toBeGreaterThan(0);
   });
 
+  it("serves lifetime models by default and scopes them by range", async () => {
+    const { makeServer } = await setup();
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+
+    const lifetime = await fetch(`${base}/api/models`);
+    expect(lifetime.status).toBe(200);
+    expect(await lifetime.json()).toHaveLength(1);
+
+    const recent = await fetch(`${base}/api/models?range=7d`);
+    expect(recent.status).toBe(200);
+    expect(await recent.json()).toEqual([]);
+  });
+
+  it("accepts the 1d range for timeseries and models", async () => {
+    const { makeServer } = await setup();
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+
+    const timeseries = await fetch(`${base}/api/timeseries?range=1d`);
+    expect(timeseries.status).toBe(200);
+    expect(await timeseries.json()).toEqual(expect.any(Array));
+
+    const models = await fetch(`${base}/api/models?range=1d`);
+    expect(models.status).toBe(200);
+    expect(await models.json()).toEqual(expect.any(Array));
+  });
+
+  it("accepts an explicit timeseries grain", async () => {
+    const { makeServer } = await setup();
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+
+    const timeseries = await fetch(`${base}/api/timeseries?range=30d&grain=6h`);
+    expect(timeseries.status).toBe(200);
+    expect(await timeseries.json()).toEqual(expect.any(Array));
+  });
+
+  it("accepts tz query for timeseries and models", async () => {
+    const { makeServer } = await setup();
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+
+    const timeseries = await fetch(`${base}/api/timeseries?range=1d&tz=Australia%2FSydney`);
+    expect(timeseries.status).toBe(200);
+    expect(await timeseries.json()).toEqual(expect.any(Array));
+
+    const models = await fetch(`${base}/api/models?range=7d&tz=Australia%2FSydney`);
+    expect(models.status).toBe(200);
+    expect(await models.json()).toEqual(expect.any(Array));
+
+    const badTz = await fetch(`${base}/api/timeseries?range=1d&tz=Not%2FA%2FZone`);
+    expect(badTz.status).toBe(200);
+    expect(await badTz.json()).toEqual(expect.any(Array));
+  });
+
+  it("serves /api/fx from cache without upstream when fresh", async () => {
+    const nativeFetch = globalThis.fetch;
+    const upstreamFetch = vi.fn();
+    vi.stubGlobal("fetch", upstreamFetch);
+    vi.resetModules();
+    const home = path.join(root, `fx-cache-${Date.now()}`);
+    const otelDir = path.join(home, ".copilot", "otel");
+    const cacheDir = path.join(home, ".copilot", "cost-cache");
+    const fxCache = path.join(cacheDir, "fx-usd-aud.json");
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(otelDir, { recursive: true });
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(path.join(otelDir, "copilot-otel.jsonl"), "\n", "utf-8");
+    writeFileSync(
+      fxCache,
+      JSON.stringify({
+        schema_version: 1,
+        base: "USD",
+        quote: "AUD",
+        rate: 1.5,
+        fetched_at: new Date().toISOString(),
+        provider_date: "2026-08-18",
+        source: "frankfurter",
+        source_url: "https://api.frankfurter.dev/v1/latest?base=USD&symbols=AUD",
+        ttl_seconds: 86_400,
+      }),
+      "utf-8",
+    );
+    process.env = {
+      ...envWithoutOtel,
+      HOME: home,
+      COPILOT_OTEL_DIR: otelDir,
+      COPILOT_OTEL_ENABLED: "true",
+      COPILOT_COST_FX_CACHE: fxCache,
+      COPILOT_COST_AUTO_REFRESH: "0",
+    };
+    const { makeServer } = await import("../src/dashboard/server.js");
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+
+    const fx = await nativeFetch(`${base}/api/fx`);
+    expect(fx.status).toBe(200);
+    expect(await fx.json()).toMatchObject({
+      available: true,
+      base: "USD",
+      quote: "AUD",
+      rate: 1.5,
+      stale: false,
+      source: "frankfurter",
+    });
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 unavailable for /api/fx when offline with no cache", async () => {
+    const nativeFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    vi.resetModules();
+    const home = path.join(root, `fx-offline-${Date.now()}`);
+    const otelDir = path.join(home, ".copilot", "otel");
+    const fxCache = path.join(home, ".copilot", "cost-cache", "fx-usd-aud.json");
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(otelDir, { recursive: true });
+    writeFileSync(path.join(otelDir, "copilot-otel.jsonl"), "\n", "utf-8");
+    process.env = {
+      ...envWithoutOtel,
+      HOME: home,
+      COPILOT_OTEL_DIR: otelDir,
+      COPILOT_OTEL_ENABLED: "true",
+      COPILOT_COST_FX_CACHE: fxCache,
+      COPILOT_COST_REFRESH_RETRY_MINUTES: "0",
+    };
+    const { makeServer } = await import("../src/dashboard/server.js");
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+
+    const fx = await nativeFetch(`${base}/api/fx`);
+    expect(fx.status).toBe(200);
+    expect(await fx.json()).toMatchObject({
+      available: false,
+      base: "USD",
+      quote: "AUD",
+      rate: null,
+    });
+  });
+
+  it("rejects /api/fx with a foreign Host", async () => {
+    const { makeServer } = await setup();
+    server = makeServer("127.0.0.1", 0);
+    const base = await listen(server);
+    const fx = await rawGet(base, "/api/fx", { Host: "evil.com" });
+    expect(fx.status).toBe(403);
+    expect(JSON.parse(fx.body)).toEqual({ error: "forbidden host" });
+  });
+
   it("rejects requests with a foreign Host", async () => {
     const { makeServer } = await setup();
     server = makeServer("127.0.0.1", 0);

@@ -31,6 +31,74 @@ describe("pricing fetcher", () => {
   cached_input: $1.00
   output: $12.00
 
+- model: 'GPT-5.4'
+  provider: openai
+  threshold: '≤ 272K'
+  tier: Default
+  input: $2.50
+  cached_input: $0.25
+  output: $15.00
+  cache_write: Not applicable
+
+- model: GPT-5.4
+  provider: openai
+  threshold: '> 272K'
+  tier: Long context
+  input: $5.00
+  cached_input: $0.50
+  output: $22.50
+  cache_write: Not applicable
+
+- model: 'Grok 4.5'
+  provider: xai
+  threshold: '≤ 200K'
+  tier: Default
+  input: $2.00
+  cached_input: $0.50
+  output: $6.00
+
+- model: 'Grok 4.5'
+  provider: xai
+  threshold: '> 200K'
+  tier: Long context
+  input: $4.00
+  cached_input: $1.00
+  output: $12.00
+
+- model: 'Gemini 3.1 Pro'
+  provider: google
+  threshold: '≤ 200K'
+  tier: Default
+  input: $2.00
+  cached_input: $0.20
+  output: $12.00
+
+- model: 'Gemini 3.1 Pro'
+  provider: google
+  threshold: '> 200K'
+  tier: Long context
+  input: $4.00
+  cached_input: $0.40
+  output: $18.00
+
+- model: GPT-5.6 Sol
+  provider: openai
+  threshold: '≤ 272K'
+  tier: Default
+  input: $5.00
+  cached_input: $0.50
+  output: $30.00
+  cache_write: $6.25
+
+- model: GPT-5.6 Sol
+  provider: openai
+  threshold: '> 272K'
+  tier: Long context
+  input: $10.00
+  cached_input: $1.00
+  output: $45.00
+  cache_write: $12.50
+
 - model: Claude Opus 4.7
   provider: anthropic
   release_status: GA
@@ -73,6 +141,15 @@ describe("pricing fetcher", () => {
     expect(data.models["gpt-4.1"]?.input).toBe(2);
     expect(data.models["gpt-4.1"]?.long_context_threshold).toBe(272_000);
     expect(data.models["gpt-4.1"]?.long_context_input).toBe(4);
+    expect(data.models["gpt-5.4"]?.long_context_threshold).toBe(272_000);
+    expect(data.models["gpt-5.4"]?.long_context_input).toBe(5);
+    expect(data.models["gpt-5.4"]?.cache_write).toBeUndefined();
+    expect(data.models["gpt-5.4"]?.long_context_cache_write).toBeUndefined();
+    expect(data.models["grok-4.5"]?.long_context_threshold).toBe(200_000);
+    expect(data.models["grok-4.5"]?.long_context_output).toBe(12);
+    expect(data.models["gemini-3.1-pro"]?.long_context_threshold).toBe(200_000);
+    expect(data.models["gpt-5.6-sol"]?.cache_write).toBe(6.25);
+    expect(data.models["gpt-5.6-sol"]?.long_context_cache_write).toBe(12.5);
     expect(data.models["claude-opus-4.7"]?.vendor).toBe("anthropic");
     expect(data.models["claude-opus-4.7"]?.cache_write).toBe(6.25);
     expect(data.models["gemini-2.5-pro"]?.vendor).toBe("google");

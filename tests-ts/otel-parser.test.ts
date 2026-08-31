@@ -11,6 +11,57 @@ describe("OTel parser", () => {
     expect(isChatSpan({ hrTime: [1, 2], attributes: { "gen_ai.operation.name": "chat", "gen_ai.request.model": "gpt-5-mini" } })).toBe(true);
   });
 
+  it("skips invoke_agent parent rollups that duplicate child chat tokens", () => {
+    const parent = {
+      type: "span",
+      name: "invoke_agent",
+      traceId: "t-parent",
+      spanId: "parent-1",
+      attributes: {
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.request.model": "grok-4.5",
+        "gen_ai.usage.input_tokens": 629_831,
+        "gen_ai.usage.cache_read.input_tokens": 555_008,
+        "gen_ai.usage.output_tokens": 7_542,
+        "gen_ai.usage.reasoning.output_tokens": 1_637,
+        "github.copilot.nano_aiu": 47_240_200_000,
+      },
+    };
+    const child = {
+      type: "span",
+      name: "chat grok-4.5",
+      traceId: "t-parent",
+      spanId: "child-1",
+      parentSpanId: "parent-1",
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "grok-4.5",
+        "gen_ai.usage.input_tokens": 27_492,
+        "gen_ai.usage.cache_read.input_tokens": 1_408,
+        "gen_ai.usage.output_tokens": 195,
+        "github.copilot.nano_aiu": 5_404_200_000,
+      },
+    };
+    expect(isChatSpan(parent)).toBe(false);
+    expect(normalizeSpan(parent)).toBeNull();
+    expect(isChatSpan(child)).toBe(true);
+    expect(normalizeSpan(child)?.output_tokens).toBe(195);
+  });
+
+  it("skips execute_tool spans even when usage-like fields are present", () => {
+    expect(
+      isChatSpan({
+        type: "span",
+        name: "execute_tool bash",
+        attributes: {
+          "gen_ai.operation.name": "execute_tool",
+          "gen_ai.request.model": "grok-4.5",
+          "gen_ai.usage.input_tokens": 100,
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("normalizes a Format-A-ish span fixture with fresh input", () => {
     const call = normalizeSpan(fixture);
     expect(call).toMatchObject({ session_id: "sess-test-123", model: "claude-opus-4.7", input_tokens: 700, output_tokens: 100, cache_read: 200, cache_creation: 100, reasoning: 20, duration_ms: 321, source: "cli-span" });
@@ -64,5 +115,38 @@ describe("OTel parser", () => {
 
   it("returns null for metric records", () => {
     expect(normalizeSpan({ scopeMetrics: [], attributes: { "gen_ai.operation.name": "chat" } })).toBeNull();
+  });
+
+  it("prefers the backend-stamped nano-AIU cost over the token x snapshot-price estimate", () => {
+    const call = normalizeSpan({
+      traceId: "t3",
+      spanId: "s3",
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "grok-4.5",
+        "gen_ai.usage.input_tokens": 41746,
+        "gen_ai.usage.cache_read.input_tokens": 38656,
+        "gen_ai.usage.output_tokens": 292,
+        "github.copilot.nano_aiu": 2_726_000_000,
+      },
+    });
+    // 2.726e9 nano-AIU / 1e9 (nano->AIC) / 100 (AIC->USD) = $0.02726, far below
+    // what a naive token x list-price estimate would produce for this model.
+    expect(call?.usd_cost).toBeCloseTo(0.02726, 9);
+  });
+
+  it("falls back to the token x snapshot-price estimate when nano-AIU is absent", () => {
+    const call = normalizeSpan({
+      traceId: "t4",
+      spanId: "s4",
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "claude-opus-4.5",
+        "gen_ai.usage.input_tokens": 20_000,
+        "gen_ai.usage.cache_creation.input_tokens": 19_000,
+        "gen_ai.usage.output_tokens": 200,
+      },
+    });
+    expect(call?.usd_cost).toBeCloseTo(0.12875, 9);
   });
 });

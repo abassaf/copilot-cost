@@ -121,7 +121,7 @@ GitHub Copilot CLI ──OTel spans (JSONL)──▶ ~/.copilot/otel/copilot-ote
    export COPILOT_OTEL_EXPORTER_TYPE=file
    export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/otel/copilot-otel.jsonl"
    ```
-2. **Aggregate** — on every render, recent spans are read, `gen_ai.usage.*` counters and `gen_ai.request.model` are extracted, and rolled up by session / model / day.
+2. **Aggregate** — on every render, recent spans are read, **leaf `chat` completions only** are kept (parent `invoke_agent` rollups and `execute_tool` spans are ignored so totals are not doubled), `gen_ai.usage.*` counters and `gen_ai.request.model` are extracted, and rolled up by session / model / day. See [`docs/otel-span-accounting.md`](docs/otel-span-accounting.md).
 3. **Estimate** — token counts are multiplied by prices from GitHub's public [Copilot models & pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) table to estimate USD and GitHub AI Credits (AIC). The local cache refreshes automatically when it is older than seven days, retains the last-known-good data if GitHub is unavailable, and falls back to the bundled snapshot when no cache exists. Long-context rates are selected from the published input-token thresholds. This is not billing data.
 4. **Render** — a one-line statusline, plus an optional local web dashboard.
 
@@ -135,6 +135,8 @@ More on the underlying telemetry pipeline: [Copilot OpenTelemetry observability]
 - ✅ The dashboard only supports local binds (`127.0.0.1` or `localhost`).
 - ✅ This package emits **no telemetry or analytics** of its own.
 - 🌐 Pricing refresh contacts GitHub's public Docs pricing source only when requested or when the cache needs refreshing.
+- ✅ `import-history` reads `~/.copilot/session-state/` and writes to `~/.copilot/otel/` locally. Nothing is uploaded.
+- 🌐 Optional dashboard **AUD display** fetches a USD→AUD reference rate only (Frankfurter/ECB, with a public fallback). No usage, sessions, or costs are sent. The rate is cached under `~/.copilot/cost-cache/`; conversion math (`usd × rate`) runs locally. CSV export and stored totals remain USD.
 
 ---
 
@@ -155,9 +157,13 @@ More on the underlying telemetry pipeline: [Copilot OpenTelemetry observability]
 
 - **The statusline does not appear.** Run `copilot-cost doctor`. The custom statusline requires `"experimental": true` in `~/.copilot/settings.json` — without it the GitHub Copilot CLI ignores the `statusLine` block entirely (its logs show `STATUS_LINE: false`). Re-running `copilot-cost install` sets both keys; then restart Copilot CLI.
 - **No usage shows up yet.** Make sure you're on the latest Copilot CLI, restart your shell and `copilot`, send a prompt, then check for JSONL files in `~/.copilot/otel/`.
+- **The dashboard is empty for everything before I installed this.** Expected: Copilot only writes OTel JSONL once the exporter is enabled. Run `copilot-cost import-history` to recover earlier sessions from `~/.copilot/session-state/`, then `--write` to apply. See [`docs/importing-history.md`](docs/importing-history.md).
 - **I do not want profile edits.** Use `copilot-cost install --no-otel-profile` and paste the printed OpenTelemetry block into the shell profile you choose.
 - **The dashboard will not bind.** Use a local host only, e.g. `copilot-cost dashboard --host 127.0.0.1 --port 4567`.
-- **Pricing looks stale.** Run `copilot-cost refresh-pricing --force`. Set `COPILOT_COST_REFRESH_DAYS` to change the automatic refresh interval, or `COPILOT_COST_AUTO_REFRESH=0` to disable automatic refreshes.
+- **Pricing looks stale.** Run `copilot-cost refresh-pricing --force`. Set `COPILOT_COST_REFRESH_DAYS` to change the automatic refresh interval, or `COPILOT_COST_AUTO_REFRESH=0` to disable automatic refreshes. Rates and long-context thresholds are pulled from GitHub's [models & pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) table (not hardcoded per model).
+- **Statusline AIC disagrees with the header "Session: N AIC used".** The statusline prefers Copilot's own `ai_used.total_nano_aiu` when present (same source as the header).
+- **Default vs long-context pricing.** Copilot pins a context-window **mode** (`contextTier`: `default` or `long_context` in `~/.copilot/settings.json` / the model picker) — it does **not** auto-switch rates when a turn grows past a token threshold. Estimated costs use the pinned mode; rates still come from GitHub's pricing table via `refresh-pricing`.
+- **Dashboard tokens/cost are ~2× the Copilot CLI usage panel.** Older builds counted parent `invoke_agent` spans that already roll up every child `chat` call. Update, `npm run build`, and restart the dashboard. Details and verification steps: [`docs/otel-span-accounting.md`](docs/otel-span-accounting.md).
 
 ---
 
@@ -174,6 +180,8 @@ npm run build
 ## 📚 More
 
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes.
+- [`docs/importing-history.md`](docs/importing-history.md) — recovering usage from before the OTel exporter was enabled.
+- [`docs/otel-span-accounting.md`](docs/otel-span-accounting.md) — which OTel spans count, parent/`invoke_agent` double-count fix, token field semantics.
 - [GitHub Copilot CLI docs](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli) · [Copilot OpenTelemetry observability](https://docs.github.com/en/copilot/how-tos/copilot-sdk/observability/opentelemetry) · [Copilot models & pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)
 
 📄 MIT — see [LICENSE](LICENSE). Not affiliated with GitHub.

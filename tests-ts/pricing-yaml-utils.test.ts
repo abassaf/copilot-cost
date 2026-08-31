@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDollar, parseScalar, unquote } from "../src/pricing/yaml-utils.js";
+import { parseDollar, parseOptionalDollar, parseScalar, unquote } from "../src/pricing/yaml-utils.js";
 
 describe("pricing YAML utils", () => {
   it("unquotes single and double quoted strings", () => {
@@ -16,6 +16,10 @@ describe("pricing YAML utils", () => {
     expect(parseDollar('"$0.125"')).toBe(0.125);
     expect(parseDollar("")).toBe(0);
     expect(parseDollar(undefined)).toBe(0);
+    expect(parseDollar("Not applicable")).toBe(0);
+    expect(parseOptionalDollar("Not applicable")).toBeNull();
+    expect(parseOptionalDollar("$6.25")).toBe(6.25);
+    expect(parseOptionalDollar(undefined)).toBeNull();
   });
 
   it("coerces YAML scalars used by snapshot pricing", () => {

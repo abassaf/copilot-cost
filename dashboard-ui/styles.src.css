@@ -89,6 +89,16 @@
     @apply inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-ring;
   }
 
+  .currency-btn[aria-pressed="true"],
+  .metric-btn[aria-pressed="true"],
+  .grain-btn[aria-pressed="true"] {
+    @apply bg-muted text-foreground;
+  }
+
+  .fx-status {
+    @apply truncate text-[11px] font-medium text-muted-foreground;
+  }
+
   .pill {
     @apply inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground;
   }

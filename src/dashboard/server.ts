@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 import { loadPricing } from "../pricing/loader.js";
 import { refreshPricing } from "../pricing/fetcher.js";
+import { getFxStatus } from "../fx/index.js";
 import { appendOtelExporterBlock, ensureOtelExporterFile, hasOtelBlock, resolveInstallPaths } from "../install.js";
 import { resolveOtelDir, resolveOtelFiles } from "../otel/paths.js";
 import { readAllCalls } from "../otel/reader.js";
@@ -12,7 +13,7 @@ import { summary, sessions, sessionDetail, timeseries, models, exportCsv } from 
 import type { NormalizedCall } from "../otel/parser.js";
 import { packageRoot } from "../util/package-root.js";
 
-type Range = "7d" | "30d" | "90d" | "all";
+type Range = "1d" | "7d" | "30d" | "90d" | "all";
 type JsonValue = unknown;
 
 const pkgRoot = packageRoot(import.meta.url);
@@ -39,7 +40,16 @@ function serveFile(res: ServerResponse, fileName: string, contentType: string): 
 
 function rangeParam(url: URL): Range {
   const value = url.searchParams.get("range");
-  return value === "7d" || value === "30d" || value === "90d" || value === "all" ? value : "7d";
+  return value === "1d" || value === "7d" || value === "30d" || value === "90d" || value === "all" ? value : "all";
+}
+
+/** Browser IANA zone from ?tz=; invalid/missing → UTC (aggregations resolve again). */
+function tzParam(url: URL): string {
+  return url.searchParams.get("tz") || "UTC";
+}
+
+function grainParam(url: URL): string | null {
+  return url.searchParams.get("grain");
 }
 
 function readCalls(): NormalizedCall[] {
@@ -100,9 +110,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, expectedPort: (
     if (method === "GET" && url.pathname === "/chart.umd.js") return serveFile(res, "chart.umd.js", "text/javascript; charset=utf-8");
     if (method === "GET" && url.pathname === "/api/health") return json(res, 200, health());
     if (method === "GET" && url.pathname === "/api/pricing") return json(res, 200, loadPricing());
+    if (method === "GET" && url.pathname === "/api/fx") return json(res, 200, await getFxStatus());
     if (method === "POST" && url.pathname === "/api/refresh-pricing") {
       await refreshPricing({ force: true });
       return json(res, 200, loadPricing());
+    }
+    if (method === "POST" && url.pathname === "/api/refresh-fx") {
+      return json(res, 200, await getFxStatus({ force: true }));
     }
     if (method === "POST" && url.pathname === "/api/install-otel") {
       const paths = resolveInstallPaths();
@@ -117,8 +131,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, expectedPort: (
       if (method === "GET" && url.pathname === "/api/sessions") return json(res, 200, sessions(calls));
       const sessionMatch = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname);
       if (method === "GET" && sessionMatch?.[1]) return json(res, 200, sessionDetail(calls, decodeURIComponent(sessionMatch[1])));
-      if (method === "GET" && url.pathname === "/api/timeseries") return json(res, 200, timeseries(calls, rangeParam(url)));
-      if (method === "GET" && url.pathname === "/api/models") return json(res, 200, models(calls));
+      if (method === "GET" && url.pathname === "/api/timeseries") {
+        return json(res, 200, timeseries(calls, rangeParam(url), tzParam(url), grainParam(url)));
+      }
+      if (method === "GET" && url.pathname === "/api/models") {
+        return json(res, 200, models(calls, rangeParam(url), tzParam(url)));
+      }
       if (method === "GET" && url.pathname === "/api/export.csv") {
         return send(res, 200, exportCsv(calls), "text/csv; charset=utf-8");
       }

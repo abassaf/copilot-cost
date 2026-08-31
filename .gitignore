@@ -7,3 +7,8 @@ test-results/
 playwright-report/
 *.tsbuildinfo
 .DS_Store
+
+# Copilot usage data. Never belongs in the repo: session titles are derived from
+# prompts and the sidecar records working directories.
+copilot-cost-imported.jsonl
+copilot-cost-meta.jsonl

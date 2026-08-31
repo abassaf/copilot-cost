@@ -42,14 +42,22 @@
             <p class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Local usage analytics</p>
             <h1 id="page-title" class="truncate text-xl font-semibold tracking-tight sm:text-2xl">Overview</h1>
           </div>
-          <div class="hidden items-center rounded-md border border-border p-0.5 sm:flex" role="group" aria-label="Date range">
-            <button class="range-btn btn-ghost h-8 px-2.5" data-range="7d" type="button">7d</button>
-            <button class="range-btn btn-ghost h-8 px-2.5" data-range="30d" type="button">30d</button>
-            <button class="range-btn btn-ghost h-8 px-2.5" data-range="90d" type="button">90d</button>
-            <button class="range-btn btn-ghost h-8 px-2.5" data-range="all" type="button">All</button>
+          <div class="flex items-center gap-2">
+            <div class="hidden items-center rounded-md border border-border p-0.5 sm:flex" role="group" aria-label="Date range">
+              <button class="range-btn btn-ghost h-8 px-2.5" data-range="1d" type="button">1d</button>
+              <button class="range-btn btn-ghost h-8 px-2.5" data-range="7d" type="button">7d</button>
+              <button class="range-btn btn-ghost h-8 px-2.5" data-range="30d" type="button">30d</button>
+              <button class="range-btn btn-ghost h-8 px-2.5" data-range="90d" type="button">90d</button>
+              <button class="range-btn btn-ghost h-8 px-2.5" data-range="all" type="button">All</button>
+            </div>
+            <div class="flex items-center rounded-md border border-border p-0.5" role="group" aria-label="Display currency">
+              <button class="currency-btn btn-ghost h-8 px-2.5" data-currency="USD" type="button">USD</button>
+              <button class="currency-btn btn-ghost h-8 px-2.5" data-currency="AUD" type="button">AUD</button>
+            </div>
+            <span id="fx-status" class="fx-status hidden max-w-[220px] lg:inline" aria-live="polite"></span>
           </div>
           <button id="refresh" class="btn-ghost px-2 sm:px-3" type="button" aria-label="Refresh data">↻<span class="hidden sm:inline">Refresh</span></button>
-          <a class="btn hidden sm:inline-flex" href="/api/export.csv" download>Export CSV</a>
+          <a class="btn hidden sm:inline-flex" href="/api/export.csv" download title="Exports canonical USD costs">Export CSV</a>
           <span class="pill hidden md:inline-flex" title="Uses prefers-color-scheme">Theme: auto</span>
         </div>
       </header>

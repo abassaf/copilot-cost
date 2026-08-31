@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } fr
 import path from "node:path";
 import process from "node:process";
 import { CACHE_PRICING, SNAPSHOT, clearPricingCache, type ModelPrice, type Pricing } from "./loader.js";
-import { parseDollar, splitLines, stripComment, unquote } from "./yaml-utils.js";
+import { parseDollar, parseOptionalDollar, splitLines, stripComment, unquote } from "./yaml-utils.js";
 
 export type PricingData = Pricing;
 
@@ -96,9 +96,10 @@ export function parsePricingYaml(text: string): PricingData {
       cached_input: parseDollar(entry.cached_input),
       output: parseDollar(entry.output),
     };
-    if (entry.cache_write != null) {
-      row.cache_write = parseDollar(entry.cache_write);
-    }
+    // "Not applicable" means no separate cache-write charge — omit the field (do not
+    // fall back to input price later). Explicit dollar amounts are stored as-is.
+    const cacheWrite = parseOptionalDollar(entry.cache_write);
+    if (cacheWrite != null) row.cache_write = cacheWrite;
     if (entry.category) {
       row.category = unquote(entry.category).toLowerCase();
     }
@@ -107,15 +108,16 @@ export function parsePricingYaml(text: string): PricingData {
 
   for (const [id, entry] of longContextRows) {
     const row = models[id];
+    // Threshold comes from the upstream "Long context" row (e.g. "> 200K", "> 272K") —
+    // never hardcoded per model.
     const threshold = parseTokenThreshold(entry.threshold);
     if (!row || threshold == null) continue;
     row.long_context_threshold = threshold;
     row.long_context_input = parseDollar(entry.input);
     row.long_context_cached_input = parseDollar(entry.cached_input);
     row.long_context_output = parseDollar(entry.output);
-    if (entry.cache_write != null) {
-      row.long_context_cache_write = parseDollar(entry.cache_write);
-    }
+    const cacheWrite = parseOptionalDollar(entry.cache_write);
+    if (cacheWrite != null) row.long_context_cache_write = cacheWrite;
   }
 
   if (Object.keys(models).length < 3) {

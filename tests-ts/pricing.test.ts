@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { clearPricingCache, computeCost, loadPricing, normalizeModel } from "../src/pricing/loader.js";
+import { clearPricingCache, computeCost, getModelPrice, loadPricing, normalizeModel } from "../src/pricing/loader.js";
 
 const root = path.resolve(".test-work", "pricing-loader");
 const pricingFile = path.join(root, "pricing.yaml");
@@ -91,7 +91,7 @@ describe("pricing loader", () => {
     expect(cost).toBeCloseTo(0.293375, 9);
   });
 
-  it("uses long-context rates only above the published threshold", () => {
+  it("uses long-context rates only when the context-window mode is long_context", () => {
     const price = {
       vendor: "openai",
       input: 2.5,
@@ -102,7 +102,55 @@ describe("pricing loader", () => {
       long_context_cached_input: 0.5,
       long_context_output: 22.5,
     };
-    expect(computeCost({ input: 272_000, cache_read: 0, cache_write: 0, output: 1_000 }, price)).toBeCloseTo(0.695);
-    expect(computeCost({ input: 273_000, cache_read: 0, cache_write: 0, output: 1_000 }, price)).toBeCloseTo(1.3875);
+    const tokens = { input: 500_000, cache_read: 0, cache_write: 0, output: 1_000 };
+    // Large input alone must NOT flip tiers — Copilot pins default vs long_context mode.
+    expect(computeCost(tokens, price)).toBeCloseTo(1.265);
+    expect(computeCost(tokens, price, { contextTier: "default" })).toBeCloseTo(1.265);
+    expect(computeCost(tokens, price, { contextTier: "long_context" })).toBeCloseTo(2.5225);
+  });
+
+  it("applies mode-based long-context rates for every catalog model that has a tier", () => {
+    const pricing = loadPricing();
+    const longContextModels = Object.entries(pricing.models).filter(
+      ([, price]) => price.long_context_input != null || price.long_context_threshold != null,
+    );
+    // Current GitHub catalog: GPT-5.4/5.5/5.6*, Gemini 3.1 Pro, Grok 4.5, …
+    expect(longContextModels.length).toBeGreaterThanOrEqual(7);
+
+    const tokens = { input: 400_000, cache_read: 100_000, cache_write: 0, output: 5_000 };
+    for (const [model, price] of longContextModels) {
+      const defaultCost = computeCost(tokens, price, { contextTier: "default" });
+      const longCost = computeCost(tokens, price, { contextTier: "long_context" });
+      const expectedDefault =
+        (300_000 / 1_000_000) * price.input +
+        (100_000 / 1_000_000) * price.cached_input +
+        (5_000 / 1_000_000) * price.output;
+      const expectedLong =
+        (300_000 / 1_000_000) * (price.long_context_input ?? price.input) +
+        (100_000 / 1_000_000) * (price.long_context_cached_input ?? price.cached_input) +
+        (5_000 / 1_000_000) * (price.long_context_output ?? price.output);
+
+      expect(defaultCost, model).toBeCloseTo(expectedDefault, 10);
+      expect(longCost, model).toBeCloseTo(expectedLong, 10);
+      expect(longCost, model).toBeGreaterThan(defaultCost);
+      // Input token count must not matter for tier selection.
+      expect(computeCost({ ...tokens, input: 10_000 }, price, { contextTier: "long_context" }), model)
+        .toBeLessThan(longCost);
+    }
+  });
+
+  it("falls back to the bundled snapshot when a refreshed pricing table drops a retired model", () => {
+    // A live-refreshed pricing table only lists models GitHub currently publishes, so it
+    // can omit models a user historically used. getModelPrice must fall back to the
+    // bundled snapshot rather than silently reporting $0 for that historical usage.
+    writeFileSync(pricingFile, pricingYaml(1), "utf-8");
+
+    const missingFromRefresh = getModelPrice("gpt-4.1", pricingFile);
+    expect(missingFromRefresh.price).not.toBeNull();
+    expect(missingFromRefresh.price?.input).toBeGreaterThan(0);
+
+    // A model present in the refreshed table must still take precedence over the snapshot.
+    const presentInRefresh = getModelPrice("gpt-5-mini", pricingFile);
+    expect(presentInRefresh.price?.input).toBe(1);
   });
 });

@@ -172,27 +172,60 @@ export function getModelPrice(
   const model = normalizeModel(modelId);
   if (!model) return { model: null, price: null };
   const pricing = loadPricing(pricingPath);
-  const exact = pricing.models[model];
-  if (exact) return { model, price: exact };
   const fallbackModel = model.endsWith("-fast") ? model.slice(0, -"-fast".length) : model;
-  return { model: fallbackModel, price: pricing.models[fallbackModel] ?? null };
+  const exact = pricing.models[model] ?? pricing.models[fallbackModel];
+  if (exact) return { model: pricing.models[model] ? model : fallbackModel, price: exact };
+
+  // A refreshed live pricing table only reflects currently-listed models, so it can
+  // drop entries for models that GitHub has since retired or renamed. Fall back to the
+  // bundled snapshot so historical local usage of those models still gets priced instead
+  // of silently reporting $0.
+  const resolvedRequested = pricingPath ?? process.env.COPILOT_COST_PRICING ?? CACHE_PRICING;
+  if (path.resolve(resolvedRequested) !== path.resolve(SNAPSHOT)) {
+    const snapshot = loadPricing(SNAPSHOT);
+    const snapshotPrice = snapshot.models[model] ?? snapshot.models[fallbackModel];
+    if (snapshotPrice) return { model: snapshot.models[model] ? model : fallbackModel, price: snapshotPrice };
+  }
+
+  return { model: fallbackModel, price: null };
+}
+
+export type ContextTier = "default" | "long_context";
+
+export interface ComputeCostOptions {
+  /**
+   * Selected Copilot context-window billing mode. Long-context rates apply only
+   * when this is `"long_context"` and the model publishes long-context prices.
+   * Copilot does **not** auto-upgrade mid-session based on input token count —
+   * the user (or settings) pins `default` vs `long_context`.
+   */
+  contextTier?: ContextTier | null;
+}
+
+export function modelHasLongContextPrices(price: ModelPrice): boolean {
+  return price.long_context_input != null || price.long_context_output != null || price.long_context_threshold != null;
 }
 
 export function computeCost(
   tokens: { input: number; cache_read: number; cache_write: number; output: number },
   price: ModelPrice,
+  opts: ComputeCostOptions = {},
 ): number {
   const totalInput = Math.trunc(tokens.input || 0);
   const cacheRead = Math.trunc(tokens.cache_read || 0);
   const cacheWrite = Math.trunc(tokens.cache_write || 0);
   const output = Math.trunc(tokens.output || 0);
   const fresh = Math.max(totalInput - cacheRead - cacheWrite, 0);
-  const longContext = price.long_context_threshold != null && totalInput > price.long_context_threshold;
+  // Mode-based tier selection (pinned window), not dynamic input-threshold switching.
+  const longContext = opts.contextTier === "long_context" && modelHasLongContextPrices(price);
   const inputPrice = longContext ? price.long_context_input ?? price.input : price.input;
   const cachedInputPrice = longContext ? price.long_context_cached_input ?? price.cached_input : price.cached_input;
-  const cacheWritePrice = longContext
-    ? price.long_context_cache_write ?? price.cache_write ?? inputPrice
-    : price.cache_write ?? inputPrice;
+  // Prefer an explicit cache_write / long_context_cache_write. If the catalog omits
+  // the field (or marked it Not applicable), charge 0 — do not invent input-price writes.
+  const explicitWrite = longContext
+    ? price.long_context_cache_write ?? price.cache_write
+    : price.cache_write;
+  const cacheWritePrice = explicitWrite ?? 0;
   const outputPrice = longContext ? price.long_context_output ?? price.output : price.output;
   return (
     (fresh / 1_000_000) * Number(inputPrice || 0) +

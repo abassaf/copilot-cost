@@ -39,6 +39,16 @@ export function parseScalar(value: string): YamlScalar {
 export function parseDollar(raw: string | undefined): number {
   if (raw == null) return 0;
   const cleaned = unquote(raw).replace(/[$,]/g, "").trim();
+  if (!cleaned || /^not\s+applicable$/i.test(cleaned)) return 0;
   const num = Number.parseFloat(cleaned);
   return Number.isFinite(num) ? num : 0;
+}
+
+/** Like parseDollar, but returns null for missing / "Not applicable" so callers can omit the field. */
+export function parseOptionalDollar(raw: string | undefined): number | null {
+  if (raw == null) return null;
+  const cleaned = unquote(raw).replace(/[$,]/g, "").trim();
+  if (!cleaned || /^not\s+applicable$/i.test(cleaned)) return null;
+  const num = Number.parseFloat(cleaned);
+  return Number.isFinite(num) ? num : null;
 }
