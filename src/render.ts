@@ -1,6 +1,9 @@
 import process from "node:process";
 import { computeCost, getModelPrice, normalizeModel } from "./pricing/loader.js";
+import { resolveContextTier } from "./util/context-tier.js";
 import { appendSessionMeta } from "./util/session-meta.js";
+import { NANO_AIU_PER_AIC } from "./util/aiu.js";
+export { NANO_AIU_PER_AIC } from "./util/aiu.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -41,7 +44,18 @@ function firstNumber(source: JsonObject, keys: string[]): number | null {
   return null;
 }
 
+function nanoAiuToAic(nano: number): number {
+  return nano / NANO_AIU_PER_AIC;
+}
+
 function payloadAic(root: JsonObject): number | null {
+  // Prefer the CLI's own session accounting (already applies per-call long-context
+  // tiers and multipliers) over recomputing from cumulative token totals.
+  const aiUsed = asObject(root.ai_used);
+  const nano = firstNumber(aiUsed, ["total_nano_aiu", "totalNanoAiu", "nano_aiu", "nanoAiu"])
+    ?? firstNumber(root, ["total_nano_aiu", "totalNanoAiu"]);
+  if (nano !== null) return nanoAiuToAic(nano);
+
   const cost = asObject(root.cost);
   return firstNumber(cost, [
     "total_ai_credits",
@@ -104,6 +118,9 @@ export function renderPayload(payload: unknown, opts: { persist?: boolean } = {}
   const cacheWrite = intValue(cw, "total_cache_write_tokens");
 
   const sessionId = strValue(root, "session_id");
+  // Pin pricing to the selected context-window mode (default vs long_context), not
+  // to cumulative token counts. Prefer payload → session meta → settings.json.
+  const contextTier = resolveContextTier({ payload: root, sessionId });
   if (sessionId && opts.persist !== false && !process.env.COPILOT_COST_NO_META) {
     const { model: normModel } = getModelPrice(rawModel);
     appendSessionMeta({
@@ -112,6 +129,7 @@ export function renderPayload(payload: unknown, opts: { persist?: boolean } = {}
       session_name: strValue(root, "session_name"),
       cwd: strValue(root, "cwd"),
       model: normModel ?? (rawModel ? normalizeModel(rawModel) ?? rawModel : null),
+      context_tier: contextTier,
     });
   }
 
@@ -124,7 +142,13 @@ export function renderPayload(payload: unknown, opts: { persist?: boolean } = {}
   const { price } = pricedModel ?? getModelPrice(rawModel);
   let usd: number | null = 0;
   if (price) {
-    usd = computeCost({ input: totalInput, cache_read: cacheRead, cache_write: cacheWrite, output }, price);
+    // Statusline prefers CLI ai_used nano-AIU when present; this estimate is the
+    // fallback and uses the pinned context-window tier for the whole session.
+    usd = computeCost(
+      { input: totalInput, cache_read: cacheRead, cache_write: cacheWrite, output },
+      price,
+      { contextTier },
+    );
   } else if (!isEmpty) {
     usd = null;
   }
@@ -161,5 +185,5 @@ export function renderPayload(payload: unknown, opts: { persist?: boolean } = {}
     return body;
   }
   const color = process.env.COPILOT_COST_COLOR ?? "90";
-  return `\u001b[${color}m${body}\u001b[0m`;
+  return `[${color}m${body}[0m`;
 }

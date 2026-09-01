@@ -1,4 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { resolveOtelFiles } from "./paths.js";
 import { type NormalizedCall, normalizeSpan } from "./parser.js";
 import { metaFilePath, readSessionMeta, type SessionMetaEntry } from "../util/session-meta.js";
@@ -6,13 +7,18 @@ import { metaFilePath, readSessionMeta, type SessionMetaEntry } from "../util/se
 export interface ReadOptions { since?: Date; until?: Date }
 
 interface CacheEntry {
+  ino: number;
   mtimeMs: number;
   size: number;
+  tail: Buffer;
   calls: NormalizedCall[];
+  seen: Set<string>;
 }
 
 const cache = new Map<string, CacheEntry>();
 let enrichedCache: { fingerprint: string; calls: NormalizedCall[] } | null = null;
+const READ_CHUNK_BYTES = 1024 * 1024;
+const TAIL_CHECK_BYTES = 4096;
 
 // Clears both the per-file parse cache and the derived enriched/sorted cache so tests
 // and callers can reset all reader state with one function.
@@ -34,26 +40,83 @@ function enrichedFingerprint(files: string[]): string {
   return [...files, metaFilePath()].map(fileFingerprint).join("|");
 }
 
+function parseLine(line: string, calls: NormalizedCall[], seen: Set<string>): void {
+  if (!line.trim()) return;
+  try {
+    const call = normalizeSpan(JSON.parse(line) as unknown);
+    if (call && !seen.has(call.dedup_key)) {
+      seen.add(call.dedup_key);
+      calls.push(call);
+    }
+  } catch {
+    // Ignore malformed exporter lines; future reads will retry if file metadata changes.
+  }
+}
+
+function parseRange(file: string, start: number, end: number, calls: NormalizedCall[], seen: Set<string>): void {
+  const fd = openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+  const decoder = new StringDecoder("utf-8");
+  let pending = "";
+  let position = start;
+
+  try {
+    while (position < end) {
+      const requested = Math.min(buffer.length, end - position);
+      const bytesRead = readSync(fd, buffer, 0, requested, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+
+      const text = pending + decoder.write(buffer.subarray(0, bytesRead));
+      let lineStart = 0;
+      let newline = text.indexOf("\n", lineStart);
+      while (newline !== -1) {
+        const lineEnd = newline > lineStart && text[newline - 1] === "\r" ? newline - 1 : newline;
+        parseLine(text.slice(lineStart, lineEnd), calls, seen);
+        lineStart = newline + 1;
+        newline = text.indexOf("\n", lineStart);
+      }
+      pending = text.slice(lineStart);
+    }
+    pending += decoder.end();
+    parseLine(pending, calls, seen);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readTail(file: string, size: number): Buffer {
+  const length = Math.min(size, TAIL_CHECK_BYTES);
+  if (length === 0) return Buffer.alloc(0);
+  const tail = Buffer.allocUnsafe(length);
+  const fd = openSync(file, "r");
+  try {
+    const bytesRead = readSync(fd, tail, 0, length, size - length);
+    return bytesRead === length ? tail : tail.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function parseFile(file: string): NormalizedCall[] {
   const st = statSync(file);
   const cached = cache.get(file);
-  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.calls;
-
-  const seen = new Set<string>();
-  const calls: NormalizedCall[] = [];
-  for (const line of readFileSync(file, "utf-8").split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const call = normalizeSpan(JSON.parse(line) as unknown);
-      if (call && !seen.has(call.dedup_key)) {
-        seen.add(call.dedup_key);
-        calls.push(call);
-      }
-    } catch {
-      // Ignore malformed exporter lines; future reads will retry if file metadata changes.
-    }
+  if (cached && cached.ino === st.ino && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+    return cached.calls;
   }
-  cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, calls });
+
+  const previousTail = cached && st.size > cached.size ? readTail(file, cached.size) : null;
+  const canAppend = cached
+    && cached.ino === st.ino
+    && st.size > cached.size
+    && previousTail?.equals(cached.tail);
+  const calls = canAppend ? [...cached.calls] : [];
+  const seen = canAppend ? new Set(cached.seen) : new Set<string>();
+  const start = canAppend ? cached.size : 0;
+
+  if (st.size > start) parseRange(file, start, st.size, calls, seen);
+
+  cache.set(file, { ino: st.ino, mtimeMs: st.mtimeMs, size: st.size, tail: readTail(file, st.size), calls, seen });
   return calls;
 }
 

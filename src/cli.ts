@@ -4,6 +4,7 @@ import { refreshPricing } from "./pricing/fetcher.js";
 import { renderPayload } from "./render.js";
 import { cmdInstall, cmdUninstall, cmdDoctor } from "./install.js";
 import { cmdDashboard } from "./dashboard/server.js";
+import { formatReport, runImport } from "./import/index.js";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -54,6 +55,33 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     .option("--yes", "accept prompts")
     .action(async (opts: { yes?: boolean }) => exitWith(await cmdUninstall({ yes: Boolean(opts.yes) })));
   program.command("doctor").action(async () => exitWith(await cmdDoctor()));
+  program
+    .command("import-history")
+    .description("import Copilot sessions that predate the OTel exporter from ~/.copilot/session-state")
+    .option("--write", "write the import (default is a dry run)")
+    .option("--until <iso>", "only import sessions started before this timestamp")
+    .option("--allow-overlap", "skip the OTel cutover guard (may double count)")
+    .option("--min-completeness <ratio>", "reconciliation floor, 0-1", (value) => Number.parseFloat(String(value)))
+    .option("--json", "print the raw report as JSON")
+    .action(async (opts: { write?: boolean; until?: string; allowOverlap?: boolean; minCompleteness?: number; json?: boolean }) => {
+      let until: Date | null = null;
+      if (opts.until) {
+        const parsed = new Date(opts.until);
+        if (Number.isNaN(parsed.getTime())) {
+          console.error(`import-history: could not parse --until value ${opts.until}`);
+          exitWith(1);
+          return;
+        }
+        until = parsed;
+      }
+      const report = await runImport({
+        until,
+        allowOverlap: Boolean(opts.allowOverlap),
+        minCompleteness: opts.minCompleteness,
+        write: Boolean(opts.write),
+      });
+      console.log(opts.json ? JSON.stringify(report, null, 2) : formatReport(report));
+    });
   program
     .command("dashboard")
     .option("--port <number>", "port to listen on", (value) => Number.parseInt(String(value), 10))
